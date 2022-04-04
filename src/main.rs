@@ -1,10 +1,10 @@
 use anyhow::Result;
-use iced_x86::{Decoder, Instruction, Mnemonic, OpKind};
+use iced_x86::{Decoder, Formatter, Instruction, Mnemonic, NasmFormatter, OpKind};
 use memoffset::offset_of;
 use std::mem::size_of;
 
 #[repr(u8)]
-#[derive(num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
+#[derive(Debug, num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
 enum Opcode {
     Const,
     Load,
@@ -76,7 +76,6 @@ impl From<iced_x86::Register> for Register {
     }
 }
 
-#[repr(C)]
 pub struct Machine {
     pc: *const u8,
     sp: *mut u64,
@@ -89,6 +88,7 @@ pub struct Machine {
 }
 
 impl Machine {
+    #[cfg(target_env = "msvc")]
     pub fn new(program: &[u8]) -> Result<Self> {
         use iced_x86::code_asm::*;
 
@@ -192,6 +192,112 @@ impl Machine {
         Ok(m)
     }
 
+    #[cfg(target_env = "gnu")]
+    pub fn new(program: &[u8]) -> Result<Self> {
+        use iced_x86::code_asm::*;
+
+        let mut m = Self {
+            pc: std::ptr::null(),
+            sp: std::ptr::null_mut(),
+            regs: [0; 16],
+            program: program.to_vec(),
+            vmstack: [0; 0x1000].to_vec(),
+            cpustack: [0; 0x1000].to_vec(),
+            vmenter: region::alloc(region::page::size(), region::Protection::READ_WRITE_EXECUTE)?,
+            vmexit: region::alloc(region::page::size(), region::Protection::READ_WRITE_EXECUTE)?,
+        };
+
+        // Generate VMENTER.
+        {
+            let regmap: &[(&AsmRegister64, u8)] = &[
+                (&rax, Register::Rax.into()),
+                (&rcx, Register::Rcx.into()),
+                (&rdx, Register::Rdx.into()),
+                (&rbx, Register::Rbx.into()),
+                (&rsp, Register::Rsp.into()),
+                (&rbp, Register::Rbp.into()),
+                (&rsi, Register::Rsi.into()),
+                (&rdi, Register::Rdi.into()),
+                (&r8, Register::R8.into()),
+                (&r9, Register::R9.into()),
+                (&r10, Register::R10.into()),
+                (&r11, Register::R11.into()),
+                (&r12, Register::R12.into()),
+                (&r13, Register::R13.into()),
+                (&r14, Register::R14.into()),
+                (&r15, Register::R15.into()),
+            ];
+
+            let mut a = CodeAssembler::new(64)?;
+
+            a.mov(rax, &m as *const _ as u64)?;
+
+            // Store the GPRs
+            for (reg, regid) in regmap.iter() {
+                let offset = offset_of!(Machine, regs) + *regid as usize * 8;
+                a.mov(qword_ptr(rax + offset), **reg)?;
+            }
+
+            // Switch to the VM's CPU stack.
+            let vm_rsp = unsafe {
+                m.cpustack
+                    .as_ptr()
+                    .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+            };
+            a.mov(rsp, vm_rsp)?;
+
+            a.mov(rdi, rax)?;
+            a.mov(rax, Self::run as u64)?;
+            a.jmp(rax)?;
+
+            let insts = a.assemble(m.vmenter.as_ptr::<u64>() as u64)?;
+
+            unsafe {
+                std::ptr::copy(insts.as_ptr(), m.vmenter.as_mut_ptr(), insts.len());
+            };
+        }
+
+        // Generate VMEXIT.
+        {
+            let regmap: &[(&AsmRegister64, u8)] = &[
+                (&rax, Register::Rax.into()),
+                (&rcx, Register::Rcx.into()),
+                (&rdx, Register::Rdx.into()),
+                (&rbx, Register::Rbx.into()),
+                (&rsp, Register::Rsp.into()),
+                (&rbp, Register::Rbp.into()),
+                //(&rsi, Register::Rsi.into()),
+                //(&rdi, Register::Rdi.into()),
+                (&r8, Register::R8.into()),
+                (&r9, Register::R9.into()),
+                (&r10, Register::R10.into()),
+                (&r11, Register::R11.into()),
+                (&r12, Register::R12.into()),
+                (&r13, Register::R13.into()),
+                (&r14, Register::R14.into()),
+                (&r15, Register::R15.into()),
+            ];
+
+            let mut a = CodeAssembler::new(64)?;
+
+            // Restore the GPRs
+            for (reg, regid) in regmap.iter() {
+                let offset = offset_of!(Machine, regs) + *regid as usize * 8;
+                a.mov(**reg, qword_ptr(rdi + offset))?;
+            }
+
+            a.jmp(rsi)?;
+
+            let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
+
+            unsafe {
+                std::ptr::copy(insts.as_ptr(), m.vmexit.as_mut_ptr(), insts.len());
+            };
+        }
+
+        Ok(m)
+    }
+
     pub unsafe extern "C" fn run(&mut self) {
         self.pc = self.program.as_ptr();
         self.sp = self.vmstack.as_mut_ptr();
@@ -212,11 +318,11 @@ impl Machine {
                     self.sp = self.sp.sub(2);
                 }
                 Opcode::Add => {
-                    *self.sp.sub(1) = *self.sp.sub(1) + *self.sp;
+                    *self.sp.sub(1) = (*self.sp.sub(1)).wrapping_add(*self.sp);
                     self.sp = self.sp.sub(1);
                 }
                 Opcode::Mul => {
-                    *self.sp.sub(1) = *self.sp.sub(1) * *self.sp;
+                    *self.sp.sub(1) = (*self.sp.sub(1)).wrapping_mul(*self.sp);
                     self.sp = self.sp.sub(1);
                 }
                 Opcode::Vmctx => {
@@ -288,6 +394,31 @@ impl Assembler {
     }
 }
 
+pub fn disassemble(program: &[u8]) -> Result<String> {
+    let mut s = String::new();
+    let mut pc = program.as_ptr();
+
+    while pc < program.as_ptr_range().end {
+        let op = Opcode::try_from(unsafe { *pc })?;
+        pc = unsafe { pc.add(1) };
+
+        let mut args = String::new();
+
+        match op {
+            Opcode::Const => unsafe {
+                let v = *(pc as *const u64);
+                pc = pc.add(size_of::<u64>());
+                args.push_str(&format!("{}", v));
+            },
+            _ => {}
+        }
+
+        s.push_str(&format!("{:?} {}\n", op, args));
+    }
+
+    Ok(s)
+}
+
 struct Virtualizer {
     asm: Assembler,
 }
@@ -314,7 +445,13 @@ impl Virtualizer {
             Mnemonic::Mov => self.mov(inst),
             Mnemonic::Imul => self.imul(inst),
             Mnemonic::Ret => self.ret(),
-            _ => panic!("unsupported instruction"),
+            Mnemonic::Push => self.push(inst),
+            Mnemonic::Pop => self.pop(inst),
+            _ => {
+                let mut output = String::new();
+                NasmFormatter::new().format(inst, &mut output);
+                panic!("unsupported instruction: {}", output);
+            }
         }
     }
 
@@ -324,6 +461,7 @@ impl Virtualizer {
     }
 
     fn imul(&mut self, inst: &Instruction) {
+        assert_eq!(inst.op_count(), 2);
         self.load_operand(inst, 1);
         self.load_operand(inst, 0);
         self.asm.mul();
@@ -340,6 +478,28 @@ impl Virtualizer {
         self.store_reg(iced_x86::Register::RSP);
 
         self.asm.vmexit();
+    }
+
+    fn push(&mut self, inst: &Instruction) {
+        self.load_reg(iced_x86::Register::RSP);
+        self.asm.const_(unsafe { std::mem::transmute(-8i64) });
+        self.asm.add();
+        self.store_reg(iced_x86::Register::RSP);
+
+        self.load_operand(inst, 0);
+        self.load_reg(iced_x86::Register::RSP);
+        self.asm.store();
+    }
+
+    fn pop(&mut self, inst: &Instruction) {
+        self.load_reg(iced_x86::Register::RSP);
+        self.asm.load();
+        self.store_operand(inst, 0);
+
+        self.load_reg(iced_x86::Register::RSP);
+        self.asm.const_(8);
+        self.asm.add();
+        self.store_reg(iced_x86::Register::RSP);
     }
 
     fn load_operand(&mut self, inst: &Instruction, operand: u32) {
@@ -431,6 +591,7 @@ fn assembler_and_machine() {
 }
 
 #[test]
+#[cfg(target_env = "msvc")]
 fn virtualizer_and_machine() {
     const SHELLCODE: &[u8] = &[
         0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0x0f, 0xaf, 0x44, 0x24, 0x08, 0xc2, 0x00,
@@ -439,4 +600,27 @@ fn virtualizer_and_machine() {
     let m = Machine::new(&virtualize(&SHELLCODE)).unwrap();
     let f: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(m.vmenter.as_ptr::<()>()) };
     assert_eq!(f(2), 4);
+}
+
+#[test]
+#[cfg(target_env = "gnu")]
+fn virtualizer_and_machine() {
+    const SHELLCODE: &[u8] = &[
+        0x55, 0x48, 0x89, 0xE5, 0x89, 0x7D, 0xFC, 0x8B, 0x45, 0xFC, 0x0F, 0xAF, 0xC0, 0x5D, 0xC3,
+    ];
+    let m = Machine::new(&virtualize(&SHELLCODE)).unwrap();
+    let f: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(m.vmenter.as_ptr::<()>()) };
+    assert_eq!(f(2), 4);
+}
+
+fn main() {
+    /*const SHELLCODE: &[u8] = &[
+        0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0x0f, 0xaf, 0x44, 0x24, 0x08, 0xc2, 0x00,
+        0x00,
+    ];*/
+    const SHELLCODE: &[u8] = &[
+        0x55, 0x48, 0x89, 0xE5, 0x89, 0x7D, 0xFC, 0x8B, 0x45, 0xFC, 0x0F, 0xAF, 0xC0, 0x5D, 0xC3,
+    ];
+    let program = &virtualize(&SHELLCODE);
+    println!("{}", disassemble(&program).unwrap());
 }
