@@ -104,90 +104,86 @@ impl Machine {
         };
 
         // Generate VMENTER.
-        {
-            let regmap: &[(&AsmRegister64, u8)] = &[
-                (&rax, Register::Rax.into()),
-                (&rcx, Register::Rcx.into()),
-                (&rdx, Register::Rdx.into()),
-                (&rbx, Register::Rbx.into()),
-                (&rsp, Register::Rsp.into()),
-                (&rbp, Register::Rbp.into()),
-                (&rsi, Register::Rsi.into()),
-                (&rdi, Register::Rdi.into()),
-                (&r8, Register::R8.into()),
-                (&r9, Register::R9.into()),
-                (&r10, Register::R10.into()),
-                (&r11, Register::R11.into()),
-                (&r12, Register::R12.into()),
-                (&r13, Register::R13.into()),
-                (&r14, Register::R14.into()),
-                (&r15, Register::R15.into()),
-            ];
+        let regmap: &[(&AsmRegister64, u8)] = &[
+            (&rax, Register::Rax.into()),
+            (&rcx, Register::Rcx.into()),
+            (&rdx, Register::Rdx.into()),
+            (&rbx, Register::Rbx.into()),
+            (&rsp, Register::Rsp.into()),
+            (&rbp, Register::Rbp.into()),
+            (&rsi, Register::Rsi.into()),
+            (&rdi, Register::Rdi.into()),
+            (&r8, Register::R8.into()),
+            (&r9, Register::R9.into()),
+            (&r10, Register::R10.into()),
+            (&r11, Register::R11.into()),
+            (&r12, Register::R12.into()),
+            (&r13, Register::R13.into()),
+            (&r14, Register::R14.into()),
+            (&r15, Register::R15.into()),
+        ];
 
-            let mut a = CodeAssembler::new(64)?;
+        let mut a = CodeAssembler::new(64)?;
 
-            a.mov(rax, &m as *const _ as u64)?;
+        a.mov(rax, &m as *const _ as u64)?;
 
-            // Store the GPRs
-            for (reg, regid) in regmap.iter() {
-                let offset = offset_of!(Machine, regs) + *regid as usize * 8;
-                a.mov(qword_ptr(rax + offset), **reg)?;
-            }
-
-            // Switch to the VM's CPU stack.
-            let vm_rsp = unsafe {
-                m.cpustack
-                    .as_ptr()
-                    .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
-            };
-            a.mov(rsp, vm_rsp)?;
-
-            a.mov(rcx, rax)?;
-            a.mov(rax, Self::run as u64)?;
-            a.jmp(rax)?;
-
-            let insts = a.assemble(m.vmenter.as_ptr::<u64>() as u64)?;
-
-            unsafe {
-                std::ptr::copy(insts.as_ptr(), m.vmenter.as_mut_ptr(), insts.len());
-            };
+        // Store the GPRs
+        for (reg, regid) in regmap.iter() {
+            let offset = offset_of!(Machine, regs) + *regid as usize * 8;
+            a.mov(qword_ptr(rax + offset), **reg)?;
         }
+
+        // Switch to the VM's CPU stack.
+        let vm_rsp = unsafe {
+            m.cpustack
+                .as_ptr()
+                .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+        };
+        a.mov(rsp, vm_rsp)?;
+
+        a.mov(rcx, rax)?;
+        a.mov(rax, Self::run as u64)?;
+        a.jmp(rax)?;
+
+        let insts = a.assemble(m.vmenter.as_ptr::<u64>() as u64)?;
+
+        unsafe {
+            std::ptr::copy(insts.as_ptr(), m.vmenter.as_mut_ptr(), insts.len());
+        };
 
         // Generate VMEXIT.
-        {
-            let regmap: &[(&AsmRegister64, u8)] = &[
-                (&rax, Register::Rax.into()),
-                (&rbx, Register::Rbx.into()),
-                (&rsp, Register::Rsp.into()),
-                (&rbp, Register::Rbp.into()),
-                (&rsi, Register::Rsi.into()),
-                (&rdi, Register::Rdi.into()),
-                (&r8, Register::R8.into()),
-                (&r9, Register::R9.into()),
-                (&r10, Register::R10.into()),
-                (&r11, Register::R11.into()),
-                (&r12, Register::R12.into()),
-                (&r13, Register::R13.into()),
-                (&r14, Register::R14.into()),
-                (&r15, Register::R15.into()),
-            ];
+        let regmap: &[(&AsmRegister64, u8)] = &[
+            (&rax, Register::Rax.into()),
+            (&rbx, Register::Rbx.into()),
+            (&rsp, Register::Rsp.into()),
+            (&rbp, Register::Rbp.into()),
+            (&rsi, Register::Rsi.into()),
+            (&rdi, Register::Rdi.into()),
+            (&r8, Register::R8.into()),
+            (&r9, Register::R9.into()),
+            (&r10, Register::R10.into()),
+            (&r11, Register::R11.into()),
+            (&r12, Register::R12.into()),
+            (&r13, Register::R13.into()),
+            (&r14, Register::R14.into()),
+            (&r15, Register::R15.into()),
+        ];
 
-            let mut a = CodeAssembler::new(64)?;
+        let mut a = CodeAssembler::new(64)?;
 
-            // Restore the GPRs
-            for (reg, regid) in regmap.iter() {
-                let offset = offset_of!(Machine, regs) + *regid as usize * 8;
-                a.mov(**reg, qword_ptr(rcx + offset))?;
-            }
-
-            a.jmp(rdx)?;
-
-            let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
-
-            unsafe {
-                std::ptr::copy(insts.as_ptr(), m.vmexit.as_mut_ptr(), insts.len());
-            };
+        // Restore the GPRs
+        for (reg, regid) in regmap.iter() {
+            let offset = offset_of!(Machine, regs) + *regid as usize * 8;
+            a.mov(**reg, qword_ptr(rcx + offset))?;
         }
+
+        a.jmp(rdx)?;
+
+        let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
+
+        unsafe {
+            std::ptr::copy(insts.as_ptr(), m.vmexit.as_mut_ptr(), insts.len());
+        };
 
         Ok(m)
     }
@@ -208,92 +204,88 @@ impl Machine {
         };
 
         // Generate VMENTER.
-        {
-            let regmap: &[(&AsmRegister64, u8)] = &[
-                (&rax, Register::Rax.into()),
-                (&rcx, Register::Rcx.into()),
-                (&rdx, Register::Rdx.into()),
-                (&rbx, Register::Rbx.into()),
-                (&rsp, Register::Rsp.into()),
-                (&rbp, Register::Rbp.into()),
-                (&rsi, Register::Rsi.into()),
-                (&rdi, Register::Rdi.into()),
-                (&r8, Register::R8.into()),
-                (&r9, Register::R9.into()),
-                (&r10, Register::R10.into()),
-                (&r11, Register::R11.into()),
-                (&r12, Register::R12.into()),
-                (&r13, Register::R13.into()),
-                (&r14, Register::R14.into()),
-                (&r15, Register::R15.into()),
-            ];
+        let regmap: &[(&AsmRegister64, u8)] = &[
+            (&rax, Register::Rax.into()),
+            (&rcx, Register::Rcx.into()),
+            (&rdx, Register::Rdx.into()),
+            (&rbx, Register::Rbx.into()),
+            (&rsp, Register::Rsp.into()),
+            (&rbp, Register::Rbp.into()),
+            (&rsi, Register::Rsi.into()),
+            (&rdi, Register::Rdi.into()),
+            (&r8, Register::R8.into()),
+            (&r9, Register::R9.into()),
+            (&r10, Register::R10.into()),
+            (&r11, Register::R11.into()),
+            (&r12, Register::R12.into()),
+            (&r13, Register::R13.into()),
+            (&r14, Register::R14.into()),
+            (&r15, Register::R15.into()),
+        ];
 
-            let mut a = CodeAssembler::new(64)?;
+        let mut a = CodeAssembler::new(64)?;
 
-            a.mov(rax, &m as *const _ as u64)?;
+        a.mov(rax, &m as *const _ as u64)?;
 
-            // Store the GPRs
-            for (reg, regid) in regmap.iter() {
-                let offset = offset_of!(Machine, regs) + *regid as usize * 8;
-                a.mov(qword_ptr(rax + offset), **reg)?;
-            }
-
-            // Switch to the VM's CPU stack.
-            let vm_rsp = unsafe {
-                m.cpustack
-                    .as_ptr()
-                    .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
-            };
-            a.mov(rsp, vm_rsp)?;
-
-            a.mov(rdi, rax)?;
-            a.mov(rax, Self::run as u64)?;
-            a.jmp(rax)?;
-
-            let insts = a.assemble(m.vmenter.as_ptr::<u64>() as u64)?;
-
-            unsafe {
-                std::ptr::copy(insts.as_ptr(), m.vmenter.as_mut_ptr(), insts.len());
-            };
+        // Store the GPRs
+        for (reg, regid) in regmap.iter() {
+            let offset = offset_of!(Machine, regs) + *regid as usize * 8;
+            a.mov(qword_ptr(rax + offset), **reg)?;
         }
+
+        // Switch to the VM's CPU stack.
+        let vm_rsp = unsafe {
+            m.cpustack
+                .as_ptr()
+                .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+        };
+        a.mov(rsp, vm_rsp)?;
+
+        a.mov(rdi, rax)?;
+        a.mov(rax, Self::run as u64)?;
+        a.jmp(rax)?;
+
+        let insts = a.assemble(m.vmenter.as_ptr::<u64>() as u64)?;
+
+        unsafe {
+            std::ptr::copy(insts.as_ptr(), m.vmenter.as_mut_ptr(), insts.len());
+        };
 
         // Generate VMEXIT.
-        {
-            let regmap: &[(&AsmRegister64, u8)] = &[
-                (&rax, Register::Rax.into()),
-                (&rcx, Register::Rcx.into()),
-                (&rdx, Register::Rdx.into()),
-                (&rbx, Register::Rbx.into()),
-                (&rsp, Register::Rsp.into()),
-                (&rbp, Register::Rbp.into()),
-                //(&rsi, Register::Rsi.into()),
-                //(&rdi, Register::Rdi.into()),
-                (&r8, Register::R8.into()),
-                (&r9, Register::R9.into()),
-                (&r10, Register::R10.into()),
-                (&r11, Register::R11.into()),
-                (&r12, Register::R12.into()),
-                (&r13, Register::R13.into()),
-                (&r14, Register::R14.into()),
-                (&r15, Register::R15.into()),
-            ];
+        let regmap: &[(&AsmRegister64, u8)] = &[
+            (&rax, Register::Rax.into()),
+            (&rcx, Register::Rcx.into()),
+            (&rdx, Register::Rdx.into()),
+            (&rbx, Register::Rbx.into()),
+            (&rsp, Register::Rsp.into()),
+            (&rbp, Register::Rbp.into()),
+            //(&rsi, Register::Rsi.into()),
+            //(&rdi, Register::Rdi.into()),
+            (&r8, Register::R8.into()),
+            (&r9, Register::R9.into()),
+            (&r10, Register::R10.into()),
+            (&r11, Register::R11.into()),
+            (&r12, Register::R12.into()),
+            (&r13, Register::R13.into()),
+            (&r14, Register::R14.into()),
+            (&r15, Register::R15.into()),
+        ];
 
-            let mut a = CodeAssembler::new(64)?;
+        let mut a = CodeAssembler::new(64)?;
 
-            // Restore the GPRs
-            for (reg, regid) in regmap.iter() {
-                let offset = offset_of!(Machine, regs) + *regid as usize * 8;
-                a.mov(**reg, qword_ptr(rdi + offset))?;
-            }
-
-            a.jmp(rsi)?;
-
-            let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
-
-            unsafe {
-                std::ptr::copy(insts.as_ptr(), m.vmexit.as_mut_ptr(), insts.len());
-            };
+        // Restore the GPRs
+        for (reg, regid) in regmap.iter() {
+            let offset = offset_of!(Machine, regs) + *regid as usize * 8;
+            a.mov(**reg, qword_ptr(rdi + offset))?;
         }
+
+        a.jmp(rsi)?;
+
+        let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
+
+        unsafe {
+            std::ptr::copy(insts.as_ptr(), m.vmexit.as_mut_ptr(), insts.len());
+        };
 
         Ok(m)
     }
@@ -402,18 +394,18 @@ pub fn disassemble(program: &[u8]) -> Result<String> {
         let op = Opcode::try_from(unsafe { *pc })?;
         pc = unsafe { pc.add(1) };
 
-        let mut args = String::new();
+        s.push_str(format!("{:?}", op).as_str());
 
         match op {
             Opcode::Const => unsafe {
                 let v = *(pc as *const u64);
                 pc = pc.add(size_of::<u64>());
-                args.push_str(&format!("{}", v));
+                s.push_str(format!(" {}", v).as_str());
             },
             _ => {}
         }
 
-        s.push_str(&format!("{:?} {}\n", op, args));
+        s.push('\n');
     }
 
     Ok(s)
