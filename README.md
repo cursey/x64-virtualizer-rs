@@ -15,7 +15,7 @@ int square(int num) {
 }
 ```
 
-MSVC output:
+MSVC:
 
 ```asm
 mov     DWORD PTR [rsp+8], ecx
@@ -24,7 +24,7 @@ imul    eax, DWORD PTR num$[rsp]
 ret     0
 ```
 
-GCC output:
+GCC:
 
 
 ```asm
