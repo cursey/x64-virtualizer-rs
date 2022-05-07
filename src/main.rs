@@ -386,6 +386,34 @@ impl Assembler {
     }
 }
 
+trait Asm {
+    fn const_(&mut self, v: u64);
+    fn load(&mut self);
+    fn store(&mut self);
+    fn add(&mut self);
+    fn mul(&mut self);
+    fn vmctx(&mut self);
+    fn vmexit(&mut self);
+    fn load_operand(&mut self, inst: &Instruction, operand: u32);
+    fn store_operand(&mut self, inst: &Instruction, operand: u32);
+    fn load_reg(&mut self, reg: iced_x86::Register);
+    fn store_reg(&mut self, reg: iced_x86::Register);
+    fn lea_operand(&mut self, inst: &Instruction);
+}
+
+macro_rules! vmasm {
+    (
+        $a:ident,
+        $($inst:ident $($operand:expr),* );* $(;)*
+    ) => {{
+        $(
+            $a.$inst(
+                $($operand),*
+            );
+        )*
+    }}
+}
+
 pub fn disassemble(program: &[u8]) -> Result<String> {
     let mut s = String::new();
     let mut pc = program.as_ptr();
@@ -448,50 +476,95 @@ impl Virtualizer {
     }
 
     fn mov(&mut self, inst: &Instruction) {
-        self.load_operand(inst, 1);
-        self.store_operand(inst, 0);
+        vmasm!(self,
+            load_operand inst, 1;
+            store_operand inst, 0;
+        );
     }
 
     fn imul(&mut self, inst: &Instruction) {
         assert_eq!(inst.op_count(), 2);
-        self.load_operand(inst, 1);
-        self.load_operand(inst, 0);
-        self.asm.mul();
-        self.store_operand(inst, 0);
+
+        vmasm!(self,
+            load_operand inst, 1;
+            load_operand inst, 0;
+            mul;
+            store_operand inst, 0;
+        );
     }
 
     fn ret(&mut self) {
-        self.load_reg(iced_x86::Register::RSP);
-        self.asm.load();
+        use iced_x86::Register::RSP;
 
-        self.load_reg(iced_x86::Register::RSP);
-        self.asm.const_(8);
-        self.asm.add();
-        self.store_reg(iced_x86::Register::RSP);
-
-        self.asm.vmexit();
+        vmasm!(self,
+            load_reg RSP;
+            load;
+            load_reg RSP;
+            const_ 8;
+            add;
+            store_reg RSP;
+            vmexit;
+        );
     }
 
     fn push(&mut self, inst: &Instruction) {
-        self.load_reg(iced_x86::Register::RSP);
-        self.asm.const_(unsafe { std::mem::transmute(-8i64) });
-        self.asm.add();
-        self.store_reg(iced_x86::Register::RSP);
+        use iced_x86::Register::RSP;
 
-        self.load_operand(inst, 0);
-        self.load_reg(iced_x86::Register::RSP);
-        self.asm.store();
+        vmasm!(self,
+            load_reg RSP;
+            const_ unsafe { std::mem::transmute(-8i64) };
+            add;
+            store_reg RSP;
+
+            load_operand inst, 0;
+            load_reg RSP;
+            store;
+        );
     }
 
     fn pop(&mut self, inst: &Instruction) {
-        self.load_reg(iced_x86::Register::RSP);
-        self.asm.load();
-        self.store_operand(inst, 0);
+        use iced_x86::Register::RSP;
 
-        self.load_reg(iced_x86::Register::RSP);
-        self.asm.const_(8);
+        vmasm!(self,
+            load_reg RSP;
+            load;
+            store_operand inst, 0;
+
+            load_reg RSP;
+            const_ 8;
+            add;
+            store_reg RSP;
+        );
+    }
+}
+
+impl Asm for Virtualizer {
+    fn const_(&mut self, v: u64) {
+        self.asm.const_(v);
+    }
+
+    fn load(&mut self) {
+        self.asm.load();
+    }
+
+    fn store(&mut self) {
+        self.asm.store();
+    }
+
+    fn add(&mut self) {
         self.asm.add();
-        self.store_reg(iced_x86::Register::RSP);
+    }
+
+    fn mul(&mut self) {
+        self.asm.mul();
+    }
+
+    fn vmctx(&mut self) {
+        self.asm.vmctx();
+    }
+
+    fn vmexit(&mut self) {
+        self.asm.vmexit();
     }
 
     fn load_operand(&mut self, inst: &Instruction, operand: u32) {
