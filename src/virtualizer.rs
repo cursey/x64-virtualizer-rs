@@ -1,6 +1,7 @@
-use crate::machine::{Assembler, Register, Machine};
 use iced_x86::{Decoder, Formatter, Instruction, Mnemonic, NasmFormatter, OpKind};
 use memoffset::offset_of;
+
+use crate::machine::{Assembler, Machine, Register};
 
 trait Asm {
     fn const_(&mut self, v: u64);
@@ -17,21 +18,7 @@ trait Asm {
     fn lea_operand(&mut self, inst: &Instruction);
 }
 
-/// A fun little macro that makes writing VM assembly more familiar. For example, instead of:
-/// ```
-/// self.asm.const_(2);
-/// self.asm.const_(3);
-/// self.asm.add();
-/// ```
-/// we can do:
-/// ```
-/// vmasm!(self,
-///     const_ 2;
-///     const_ 3;
-///     add;
-/// );
-/// ```
-/// Just like we were handwriting assembly in a .asm file.
+/// A fun little macro that makes writing VM assembly more familiar.
 macro_rules! vmasm {
     (
         $a:ident,
@@ -252,8 +239,8 @@ mod tests {
     #[cfg(target_env = "msvc")]
     fn virtualizer_and_machine() {
         const SHELLCODE: &[u8] = &[
-            0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0x0f, 0xaf, 0x44, 0x24, 0x08, 0xc2, 0x00,
-            0x00,
+            0x89, 0x4c, 0x24, 0x08, 0x8b, 0x44, 0x24, 0x08, 0x0f, 0xaf, 0x44, 0x24, 0x08, 0xc2,
+            0x00, 0x00,
         ];
         let m = Machine::new(&virtualize(SHELLCODE)).unwrap();
         let f: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(m.vmenter.as_ptr::<()>()) };
@@ -264,7 +251,8 @@ mod tests {
     #[cfg(target_env = "gnu")]
     fn virtualizer_and_machine() {
         const SHELLCODE: &[u8] = &[
-            0x55, 0x48, 0x89, 0xE5, 0x89, 0x7D, 0xFC, 0x8B, 0x45, 0xFC, 0x0F, 0xAF, 0xC0, 0x5D, 0xC3,
+            0x55, 0x48, 0x89, 0xE5, 0x89, 0x7D, 0xFC, 0x8B, 0x45, 0xFC, 0x0F, 0xAF, 0xC0, 0x5D,
+            0xC3,
         ];
         let m = Machine::new(&virtualize(SHELLCODE)).unwrap();
         let f: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(m.vmenter.as_ptr::<()>()) };
