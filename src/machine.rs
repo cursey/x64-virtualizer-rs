@@ -78,6 +78,7 @@ impl From<iced_x86::Register> for Register {
     }
 }
 
+#[repr(C)]
 pub struct Machine {
     pc: *const u8,
     sp: *mut u64,
