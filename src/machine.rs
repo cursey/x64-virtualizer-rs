@@ -348,7 +348,6 @@ impl Machine {
                 }
                 Opcode::Vmctx => self.stack_push(self as *const _ as u64),
                 Opcode::Vmexit => {
-                    self.sp = self.sp.sub(1);
                     let vmexit: extern "C" fn(&mut Machine) =
                         std::mem::transmute(self.vmexit.as_ptr::<()>());
                     vmexit(self);
