@@ -1,7 +1,5 @@
 use std::mem::size_of;
 use std::ptr::read_unaligned;
-use std::ptr::write_unaligned;
-
 use anyhow::Result;
 use memoffset::offset_of;
 
@@ -129,7 +127,7 @@ impl Machine {
 
         let mut a = CodeAssembler::new(64)?;
 
-        a.mov(rax, &m as *const _ as u64)?;
+        a.mov(rax, &mut m as *mut _ as u64)?;
 
         // Store the GPRs
         for (reg, regid) in regmap.iter() {
@@ -141,7 +139,7 @@ impl Machine {
         let vm_rsp = unsafe {
             m.cpustack
                 .as_ptr()
-                .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+                .add(m.cpustack.len() - 0x100 - (size_of::<u64>() * 2)) as u64
         };
         a.mov(rsp, vm_rsp)?;
 
@@ -158,6 +156,7 @@ impl Machine {
         // Generate VMEXIT.
         let regmap: &[(&AsmRegister64, u8)] = &[
             (&rax, Register::Rax.into()),
+            (&rdx, Register::Rdx.into()),
             (&rbx, Register::Rbx.into()),
             (&rsp, Register::Rsp.into()),
             (&rbp, Register::Rbp.into()),
@@ -171,6 +170,8 @@ impl Machine {
             (&r13, Register::R13.into()),
             (&r14, Register::R14.into()),
             (&r15, Register::R15.into()),
+            // Self ptr is stored in Rcx, so we will restore it last
+            (&rcx, Register::Rcx.into()),
         ];
 
         let mut a = CodeAssembler::new(64)?;
@@ -181,7 +182,7 @@ impl Machine {
             a.mov(**reg, qword_ptr(rcx + offset))?;
         }
 
-        a.jmp(rdx)?;
+        a.ret()?;
 
         let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
 
@@ -230,7 +231,7 @@ impl Machine {
 
         let mut a = CodeAssembler::new(64)?;
 
-        a.mov(rax, &m as *const _ as u64)?;
+        a.mov(rax, &mut m as *mut _ as u64)?;
 
         // Store the GPRs
         for (reg, regid) in regmap.iter() {
@@ -242,7 +243,7 @@ impl Machine {
         let vm_rsp = unsafe {
             m.cpustack
                 .as_ptr()
-                .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+                .add(m.cpustack.len() - 0x100 - (size_of::<u64>() * 2)) as u64
         };
         a.mov(rsp, vm_rsp)?;
 
@@ -264,8 +265,7 @@ impl Machine {
             (&rbx, Register::Rbx.into()),
             (&rsp, Register::Rsp.into()),
             (&rbp, Register::Rbp.into()),
-            //(&rsi, Register::Rsi.into()),
-            //(&rdi, Register::Rdi.into()),
+            (&rsi, Register::Rsi.into()),
             (&r8, Register::R8.into()),
             (&r9, Register::R9.into()),
             (&r10, Register::R10.into()),
@@ -274,6 +274,7 @@ impl Machine {
             (&r13, Register::R13.into()),
             (&r14, Register::R14.into()),
             (&r15, Register::R15.into()),
+            (&rdi, Register::Rdi.into()),
         ];
 
         let mut a = CodeAssembler::new(64)?;
@@ -284,7 +285,7 @@ impl Machine {
             a.mov(**reg, qword_ptr(rdi + offset))?;
         }
 
-        a.jmp(rsi)?;
+        a.ret()?;
 
         let insts = a.assemble(m.vmexit.as_ptr::<u64>() as u64)?;
 
@@ -295,10 +296,29 @@ impl Machine {
         Ok(m)
     }
 
+    #[inline(never)]
+    unsafe fn stack_push<T: Sized>(&mut self, value: T) {
+        assert_eq!(size_of::<T>() % 2, 0);
+        // stack overflow
+        assert_ne!(self.sp, self.vmstack.as_mut_ptr());
+        self.sp = self.sp.cast::<T>().sub(1) as _;
+        self.sp.cast::<T>().write_unaligned(value);
+    }
+
+    #[inline(never)]
+    unsafe fn stack_pop<T: Sized>(&mut self) -> T {
+        assert_eq!(size_of::<T>() % 2, 0);
+        let value = self.sp.cast::<T>().read_unaligned();
+        *self.sp.cast::<T>() = core::mem::zeroed();
+        self.sp = self.sp.cast::<T>().add(1) as _;
+        value
+    }
+
     #[allow(clippy::missing_safety_doc)]
     pub unsafe extern "C" fn run(&mut self) {
         self.pc = self.program.as_ptr();
-        self.sp = self.vmstack.as_mut_ptr();
+        self.sp = self.vmstack.as_mut_ptr()
+            .add((0x1000 - 0x100 - (size_of::<u64>() * 2)) / size_of::<*mut u64>());
 
         while self.pc < self.program.as_ptr_range().end {
             let op = Opcode::try_from(*self.pc).unwrap();
@@ -306,39 +326,31 @@ impl Machine {
 
             match op {
                 Opcode::Const => {
-                    write_unaligned(self.sp.add(1), read_unaligned(self.pc as *const u64));
-                    self.sp = self.sp.add(1);
+                    self.stack_push(self.pc.cast::<u64>().read_unaligned());
                     self.pc = self.pc.add(size_of::<u64>());
                 }
-                Opcode::Load => *self.sp = *(*self.sp as *const u64),
+                Opcode::Load => {
+                    let value = self.stack_pop::<*const u64>().read_unaligned();
+                    self.stack_push::<u64>(value);
+                },
                 Opcode::Store => {
-                    write_unaligned(*self.sp as *mut u64, read_unaligned(self.sp.sub(1)));
-                    self.sp = self.sp.sub(2);
+                    let target_addr = self.stack_pop::<*mut u64>();
+                    let value = self.stack_pop::<u64>();
+                    target_addr.write_unaligned(value);
                 }
                 Opcode::Add => {
-                    write_unaligned(
-                        self.sp.sub(1),
-                        read_unaligned(self.sp.sub(1)).wrapping_add(read_unaligned(self.sp)),
-                    );
-                    self.sp = self.sp.sub(1);
+                    let (op0, op1) = (self.stack_pop::<u64>(), self.stack_pop::<u64>());
+                    self.stack_push(op0.wrapping_add(op1));
                 }
                 Opcode::Mul => {
-                    write_unaligned(
-                        self.sp.sub(1),
-                        read_unaligned(self.sp.sub(1)).wrapping_mul(read_unaligned(self.sp)),
-                    );
-                    self.sp = self.sp.sub(1);
+                    let (op0, op1) = (self.stack_pop::<u64>(), self.stack_pop::<u64>());
+                    self.stack_push(op0.wrapping_mul(op1));
                 }
-                Opcode::Vmctx => {
-                    write_unaligned(self.sp.add(1), self as *const _ as u64);
-                    self.sp = self.sp.add(1);
-                }
+                Opcode::Vmctx => self.stack_push(self as *const _ as u64),
                 Opcode::Vmexit => {
-                    let exit_ip = read_unaligned(self.sp);
-                    self.sp = self.sp.sub(1);
-                    let vmexit: extern "C" fn(&mut Machine, u64) =
+                    let vmexit: extern "C" fn(&mut Machine) =
                         std::mem::transmute(self.vmexit.as_ptr::<()>());
-                    vmexit(self, exit_ip);
+                    vmexit(self);
                 }
             }
         }
