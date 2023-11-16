@@ -139,7 +139,7 @@ impl Machine {
         let vm_rsp = unsafe {
             m.cpustack
                 .as_ptr()
-                .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+                .add(m.cpustack.len() - 0x100 - (size_of::<u64>() * 2)) as u64
         };
         a.mov(rsp, vm_rsp)?;
 
@@ -243,7 +243,7 @@ impl Machine {
         let vm_rsp = unsafe {
             m.cpustack
                 .as_ptr()
-                .add(m.cpustack.len() - 0x100 - size_of::<u64>()) as u64
+                .add(m.cpustack.len() - 0x100 - (size_of::<u64>() * 2)) as u64
         };
         a.mov(rsp, vm_rsp)?;
 
@@ -318,7 +318,7 @@ impl Machine {
     pub unsafe extern "C" fn run(&mut self) {
         self.pc = self.program.as_ptr();
         self.sp = self.vmstack.as_mut_ptr()
-            .add((0x1000 - 0x100 - size_of::<u64>()) / size_of::<*mut u64>());
+            .add((0x1000 - 0x100 - (size_of::<u64>() * 2)) / size_of::<*mut u64>());
 
         while self.pc < self.program.as_ptr_range().end {
             let op = Opcode::try_from(*self.pc).unwrap();
